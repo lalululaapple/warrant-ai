@@ -29,8 +29,8 @@ def _find_column(df: pd.DataFrame, aliases: Iterable[str]) -> str:
         if column is not None:
             return column
     raise ValueError(
-        f"蝎祟蝻箏?敹?甈?嚗?亙?嚗', '.join(aliases)}嚗?"
-        f"?桀?甈?嚗', '.join(map(str, df.columns))}"
+        f"粗篩缺少必要欄位（可接受：{', '.join(aliases)}）；"
+        f"目前欄位：{', '.join(map(str, df.columns))}"
     )
 
 
@@ -51,13 +51,13 @@ def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    moneyness_col = _find_column(df, ("moneyness", "?孵憭?摨?, "?孵憭?))
+    moneyness_col = _find_column(df, ("moneyness", "價內外程度", "價內外"))
     moneyness_pct_col = _find_column(df, ("moneyness_pct",))
-    price_col = _find_column(df, ("price", "?漱??))
-    ratio_col = _find_column(df, ("ratio", "銵蝙瘥?"))
-    days_col = _find_column(df, ("days", "?拚?憭拇", "?拚???))
-    spread_col = _find_column(df, ("spread", "鞎瑁都?孵榆瘥?, "鞎瑁都?孵榆瘥?"))
-    leverage_col = _find_column(df, ("leverage", "撖西釭瑽▼"))
+    price_col = _find_column(df, ("price", "成交價"))
+    ratio_col = _find_column(df, ("ratio", "行使比例"))
+    days_col = _find_column(df, ("days", "剩餘天數", "剩餘日"))
+    spread_col = _find_column(df, ("spread", "買賣價差比", "買賣價差比%"))
+    leverage_col = _find_column(df, ("leverage", "實質槓桿"))
 
     moneyness = df[moneyness_col].astype("string")
     moneyness_pct = _numeric(df[moneyness_pct_col])
@@ -68,8 +68,8 @@ def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
     leverage = _numeric(df[leverage_col])
 
     acceptable_moneyness = (
-        (moneyness.str.contains("?孵", na=False) & moneyness_pct.between(0, MONEYNESS_ITM_MAX))
-        | (moneyness.str.contains("?孵?", na=False) & moneyness_pct.between(0, MONEYNESS_OTM_MAX))
+        (moneyness.str.contains("價內", na=False) & moneyness_pct.between(0, MONEYNESS_ITM_MAX))
+        | (moneyness.str.contains("價外", na=False) & moneyness_pct.between(0, MONEYNESS_OTM_MAX))
     )
 
     return (
@@ -87,4 +87,3 @@ def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     return df.loc[coarse_filter_mask(df)].copy().reset_index(drop=True)
-
