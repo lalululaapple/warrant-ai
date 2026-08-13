@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import math
 import traceback
+import asyncio
+import time
 
 from .crawler import crawl_warrants
 from .filter import filter_warrants
@@ -10,6 +12,12 @@ from .score import score_dataframe
 from .report import export_excel
 
 app = FastAPI(title="Warrant AI v1.1")
+
+# Small in-memory cache: repeated searches avoid launching Chromium again.
+# It is intentionally short so market data does not remain stale for long.
+SEARCH_CACHE_TTL = 300
+_search_cache = {}
+_search_locks = {}
 
 
 class SearchRequest(BaseModel):
@@ -396,7 +404,26 @@ async def search(req: SearchRequest):
 
         # 1. 抓權證
         # 正式搜尋不存每一頁截圖，可大幅縮短多頁標的的等待時間。
-        df = await crawl_warrants(symbol, save_screenshot=False)
+        now = time.monotonic()
+        cached = _search_cache.get(symbol)
+        if cached and now - cached[0] < SEARCH_CACHE_TTL:
+            df = cached[1].copy()
+            print(f"[cache] 使用 {symbol} 的近期搜尋結果")
+        else:
+            # Prevent two phone/browser requests for the same symbol from
+            # starting two memory-heavy Chromium sessions at once.
+            lock = _search_locks.setdefault(symbol, asyncio.Lock())
+            async with lock:
+                cached = _search_cache.get(symbol)
+                if cached and time.monotonic() - cached[0] < SEARCH_CACHE_TTL:
+                    df = cached[1].copy()
+                else:
+                    df = await crawl_warrants(
+                        symbol,
+                        save_screenshot=False,
+                        page_filter=filter_warrants,
+                    )
+                    _search_cache[symbol] = (time.monotonic(), df.copy())
 
         # 2. 第一層硬條件粗篩
         filtered = filter_warrants(df)
@@ -517,3 +544,4 @@ async def search(req: SearchRequest):
             status_code=500,
             detail=str(exc)
         )
+
