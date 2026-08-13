@@ -131,96 +131,26 @@ def _page_signature(df):
     return str(df.iloc[0].to_dict())
 
 
-async def _wait_for_page_change(page, previous_signature, timeout_ms=6000):
-    """Return as soon as the result rows change; avoid a fixed 1.8s wait."""
-    elapsed = 0
-    interval_ms = 100
-    while elapsed < timeout_ms:
-        await page.wait_for_timeout(interval_ms)
-        elapsed += interval_ms
-        current = await _read_current_page(page)
-        signature = _page_signature(current)
-        if signature is not None and signature != previous_signature:
-            return current
-    raise RuntimeError("åˆ‡æ›åˆ†é é€¾æ™‚ï¼Œçµæœè³‡æ–™æ²’æœ‰æ›´æ–°ã€‚")
+async def _wait_for_page_change(page, previous_smwß‹h‘éì¶»§q«^ud;ï#9`g9«h¹b!ºh xà ˆ‚ˆ
+Bˆœ™XZÂ‚ˆ™]š[İ\×ÜÚYÛ˜]\™HHÜYÙWÜÚYÛ˜]\™J[ÜYÙ\ÖËLWJBˆ]ØZ][šË˜ÛXÚÊ
+Bˆ›ˆH]ØZ]İØZ]Ù›Ü—ÜYÙWØÚ[™ÙJYÙK™]š[İ\×ÜÚYÛ˜]\™JB‚ˆYˆØ]™WÜØÜ™Y[œÚİ‚ˆ]ØZ]YÙKœØÜ™Y[œÚİ
+ˆ]\İŠˆĞÔ‘QS”ÒÕÑTˆÂˆˆÜŞ[X›ÛWÜYÙ^ÜYÙWÛ›ßKœ™È‚ˆ
+Kˆ[ÜYÙOUYBˆ
+B‚ˆš[
+ˆˆ–ØÜ˜]Û\—H9ë+ÜYÙWÛ›ßH:h y¢¤ùb,Û[Š›Š_H9ëaˆ‚ˆ
+B‚ˆYˆ›‹™[\N‚ˆœ™XZÂ‚ˆ[ÜYÙ\Ë˜\[™
+›ŠB‚ˆYˆ›İ[ÜYÙ\Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ¹§éz*h¹¢$9b§ûï#9/a¹¬¤¹§"y¢¤ùb,9.îù/ey«"º+bz,áù¥¦xà ˆŠB‚ˆ™\İ[H˜ÛÛ˜Ø]
+ˆ[ÜYÙ\ËˆYÛ›Ü™WÚ[™^UYKˆÛÜQ˜[ÙBˆ
+B‚ˆÈ9.éy«"º+by.èùè¯9c®úaãBˆÛÙWØÛÛH›Û™Bˆ›ÜˆÛÛ[ˆ™\İ[˜ÛÛ[[œÎ‚ˆÛÛ\XİHˆ‹š›Ú[ŠİŠÛÛ
+KœÜ]
 
-
-async def _visible_exact_page_link(page, page_no):
-    """å›å‚³ç›®å‰å¯è¦‹çš„åˆ†é æ•¸å­—é€£çµï¼›æ‰¾ä¸åˆ°å‰‡å›å‚³ Noneã€‚"""
-    links = page.locator("a").filter(
-        has_text=re.compile(rf"^{page_no}$")
-    )
-
-    for i in range(await links.count()):
-        link = links.nth(i)
-        try:
-            if await link.is_visible():
-                txt = (await link.inner_text()).strip()
-              â€¦1376 tokens truncatedâ€¦+", "", str(value)).lower()
-
-
-def _find_column(df: pd.DataFrame, aliases: Iterable[str]) -> str:
-    by_compact_name = {_compact(column): column for column in df.columns}
-    for alias in aliases:
-        column = by_compact_name.get(_compact(alias))
-        if column is not None:
-            return column
-    raise ValueError(
-        f"ç²—ç¯©ç¼ºå°‘å¿…è¦æ¬„ä½ï¼ˆå¯æ¥å—ï¼š{', '.join(aliases)}ï¼‰ï¼›"
-        f"ç›®å‰æ¬„ä½ï¼š{', '.join(map(str, df.columns))}"
-    )
-
-
-def _numeric(series: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce")
-    cleaned = (
-        series.astype("string")
-        .str.replace(",", "", regex=False)
-        .str.replace("%", "", regex=False)
-        .str.extract(r"(-?\d+(?:\.\d+)?)", expand=False)
-    )
-    return pd.to_numeric(cleaned, errors="coerce")
-
-
-def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
-    """Return the verified first-stage hard-filter mask."""
-    if df.empty:
-        return pd.Series(False, index=df.index, dtype=bool)
-
-    moneyness_col = _find_column(df, ("moneyness", "åƒ¹å…§å¤–ç¨‹åº¦", "åƒ¹å…§å¤–"))
-    moneyness_pct_col = _find_column(df, ("moneyness_pct",))
-    price_col = _find_column(df, ("price", "æˆäº¤åƒ¹"))
-    ratio_col = _find_column(df, ("ratio", "è¡Œä½¿æ¯”ä¾‹"))
-    days_col = _find_column(df, ("days", "å‰©é¤˜å¤©æ•¸", "å‰©é¤˜æ—¥"))
-    spread_col = _find_column(df, ("spread", "è²·è³£åƒ¹å·®æ¯”", "è²·è³£åƒ¹å·®æ¯”%"))
-    leverage_col = _find_column(df, ("leverage", "å¯¦è³ªæ§“æ¡¿"))
-
-    moneyness = df[moneyness_col].astype("string")
-    moneyness_pct = _numeric(df[moneyness_pct_col])
-    price = _numeric(df[price_col])
-    ratio = _numeric(df[ratio_col])
-    days = _numeric(df[days_col])
-    spread = _numeric(df[spread_col])
-    leverage = _numeric(df[leverage_col])
-
-    acceptable_moneyness = (
-        (moneyness.str.contains("åƒ¹å…§", na=False) & moneyness_pct.between(0, MONEYNESS_ITM_MAX))
-        | (moneyness.str.contains("åƒ¹å¤–", na=False) & moneyness_pct.between(0, MONEYNESS_OTM_MAX))
-    )
-
-    return (
-        acceptable_moneyness
-        & price.gt(0)
-        & ratio.between(RATIO_MIN, RATIO_MAX)
-        & days.ge(MIN_DAYS)
-        & spread.le(MAX_SPREAD)
-        & leverage.between(LEVERAGE_MIN, LEVERAGE_MAX)
-    ).fillna(False)
-
-
-def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply the coarse filter and return a clean, independent DataFrame."""
-    if df.empty:
-        return df.copy()
-    return df.loc[coarse_filter_mask(df)].copy().reset_index(drop=True)
+JBˆYˆÛÛ\Xİ[ˆÈ¹«"º+by.èùè¯‹Ø\œ˜[ØÛÙHŸN‚ˆÛÙWØÛÛHÛÛˆœ™XZÂ‚ˆYˆÛÙWØÛÛ\È›İ›Û™N‚ˆ™\İ[H™\İ[™›ÜÙ\XØ]\ÊˆİXœÙ]VØÛÙWØÛÛKˆÙY\H™š\œİ‚ˆ
+B‚ˆ™\İ[H™\İ[œ™\Ù]Ú[™^
+›ÜUYJB‚ˆš[
+ˆˆ–ØÜ˜]Û\—H9d"9/myc®úaãyo£9alHÛ[Š™\İ[
+_H9ëaˆ‚ˆ
+B‚ˆ™]\›ˆ™\İ[‚ˆš[˜[N‚ˆ]ØZ]œ›İÜÙ\‹˜ÛÜÙJ
+B‚‚™YˆÜ˜]Û
+Ş[X›Û
+N‚ˆ™]\›ˆ\Ş[˜Ú[Ëœ[ŠÜ˜]ÛİØ\œ˜[ÊŞ[X›Û
+JB
