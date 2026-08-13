@@ -19,10 +19,12 @@ SEARCH_CACHE_TTL = 300
 _search_cache = {}
 _search_locks = {}
 _crawler_lock = asyncio.Lock()
+_active_client_searches = {}
 
 
 class SearchRequest(BaseModel):
     symbol: str
+    client_id: str = ""
 
 
 HTML = """
@@ -183,6 +185,14 @@ async function search(){
 
     try{
 
+        let clientId = localStorage.getItem("warrantClientId");
+        if(!clientId){
+            clientId = (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : String(Date.now()) + Math.random();
+            localStorage.setItem("warrantClientId", clientId);
+        }
+
         const r = await fetch(
             "/api/search",
             {
@@ -191,7 +201,8 @@ async function search(){
                     "Content-Type":"application/json"
                 },
                 body:JSON.stringify({
-                    symbol:symbol
+                    symbol:symbol,
+                    client_id:clientId
                 })
             }
         );
@@ -406,6 +417,7 @@ def clean_value(value):
 async def search(req: SearchRequest):
 
     symbol = req.symbol.strip()
+    client_id = req.client_id.strip()[:100]
 
     if not symbol:
         raise HTTPException(
@@ -414,6 +426,24 @@ async def search(req: SearchRequest):
         )
 
     try:
+
+        # Reloading/closing a page aborts the browser's wait but does not
+        # automatically stop Playwright on the server. A new request from the
+        # same device therefore replaces its abandoned search.
+        previous_task = _active_client_searches.get(client_id)
+        if client_id and previous_task and not previous_task.done():
+            print(f"[crawler] 取消同一裝置的上一筆搜尋：{symbol}")
+            previous_task.cancel()
+            try:
+                await previous_task
+            except asyncio.CancelledError:
+                pass
+            # Give the abandoned request time to leave its global lock after
+            # Playwright has closed Chromium.
+            for _ in range(40):
+                if not _crawler_lock.locked():
+                    break
+                await asyncio.sleep(0.05)
 
         # 1. 抓權證
         # 正式搜尋不存每一頁截圖，可大幅縮短多頁標的的等待時間。
@@ -442,11 +472,24 @@ async def search(req: SearchRequest):
                             ),
                         )
                     async with _crawler_lock:
-                        df = await crawl_warrants(
-                            symbol,
-                            save_screenshot=False,
-                            page_filter=filter_warrants,
+                        crawl_task = asyncio.create_task(
+                            crawl_warrants(
+                                symbol,
+                                save_screenshot=False,
+                                page_filter=filter_warrants,
+                            )
                         )
+                        if client_id:
+                            _active_client_searches[client_id] = crawl_task
+                        try:
+                            df = await crawl_task
+                        finally:
+                            if (
+                                client_id
+                                and _active_client_searches.get(client_id)
+                                is crawl_task
+                            ):
+                                _active_client_searches.pop(client_id, None)
                     _search_cache[symbol] = (time.monotonic(), df.copy())
 
         # 2. 第一層硬條件粗篩
