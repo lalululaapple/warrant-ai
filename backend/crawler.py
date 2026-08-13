@@ -47,7 +47,7 @@ def _clean_result_df(df):
 
 
 async def _select_underlying(page, symbol):
-    """輸入股票代號並點選自動完成候選，例如 3189 景碩。"""
+    """輸入股票代號或中文名稱並選取元大的自動完成候選。"""
     target = page.locator(
         'input[placeholder="標的名稱/代碼"]'
     ).nth(0)
@@ -59,23 +59,36 @@ async def _select_underlying(page, symbol):
     await target.fill(symbol)
     await page.wait_for_timeout(1200)
 
-    # 候選文字格式例如：3189　景碩
-    pattern = re.compile(rf"^{re.escape(symbol)}\s+.+$")
+    # 候選文字格式例如：2330　台積電。中文查詢時代號在前。
+    if symbol.isdigit():
+        pattern = re.compile(rf"^{re.escape(symbol)}\s+.+$")
+    else:
+        pattern = re.compile(
+            rf"^\d{{4,6}}\s+.*{re.escape(symbol)}.*$",
+            re.IGNORECASE,
+        )
     candidates = page.get_by_text(pattern, exact=False)
 
+    visible = []
     for i in range(await candidates.count()):
         item = candidates.nth(i)
         try:
             if await item.is_visible():
                 text = (await item.inner_text()).strip()
-                if text.startswith(symbol):
-                    await item.click()
-                    await page.wait_for_timeout(600)
-                    selected_value = (await target.input_value()).strip()
-                    if symbol in selected_value:
-                        return selected_value
+                match = re.match(r"^(\d{4,6})\s+(.+)$", text)
+                if match:
+                    visible.append((item, text, match.group(2).strip()))
         except Exception:
             pass
+
+    if visible:
+        selected = next(
+            (entry for entry in visible if entry[2].casefold() == symbol.casefold()),
+            visible[0],
+        )
+        await selected[0].click()
+        await page.wait_for_timeout(600)
+        return selected[1]
 
     raise RuntimeError(
         f"輸入 {symbol} 後找不到或無法選取正確標的候選。"
@@ -207,6 +220,8 @@ async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
 
             selected = await _select_underlying(page, symbol)
             print(f"[crawler] 已選取標的：{selected}")
+            selected_match = re.match(r"^(\d{4,6})\s+(.+)$", selected)
+            resolved_symbol = selected_match.group(1) if selected_match else symbol
 
             # 元大搜尋頁預設發行人是「元大證券」
             # 改成「全部」，才能取得所有券商發行的權證
@@ -305,6 +320,8 @@ async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
             if not kept_pages:
                 # A valid search can legitimately have zero hard-filter hits.
                 if page_filter is not None:
+                    empty_result.attrs["symbol"] = resolved_symbol
+                    empty_result.attrs["underlying"] = selected
                     return empty_result
                 raise RuntimeError("查詢成功，但沒有抓到任何權證資料。")
 
@@ -329,6 +346,8 @@ async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
                 )
 
             result = result.reset_index(drop=True)
+            result.attrs["symbol"] = resolved_symbol
+            result.attrs["underlying"] = selected
 
             print(
                 f"[crawler] 合併去重後共 {len(result)} 筆"
