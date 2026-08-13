@@ -213,7 +213,12 @@ async def _extract_total_count(page):
     return None
 
 
-async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
+async def crawl_warrants(
+    symbol: str,
+    save_screenshot=False,
+    page_filter=None,
+    progress_callback=None,
+):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=HEADLESS,
@@ -302,6 +307,9 @@ async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
             else:
                 max_pages = 20
 
+            if progress_callback:
+                await progress_callback(1, max_pages, selected)
+
             for page_no in range(2, max_pages + 1):
                 link = await _visible_exact_page_link(page, page_no)
 
@@ -334,6 +342,9 @@ async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
                 print(
                     f"[crawler] 第 {page_no} 頁抓到 {len(dfn)} 筆"
                 )
+
+                if progress_callback:
+                    await progress_callback(page_no, max_pages, selected)
 
                 if dfn.empty:
                     break
