@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: warrant-ai
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeployTrigger: commit
