@@ -130,8 +130,22 @@ async def _add_result_columns(page):
 
 
 async def _read_current_page(page):
-    html = await page.content()
-    return _clean_result_df(find_warrant_table(html))
+    # Parse only the result table instead of serializing and parsing the
+    # entire Angular page on every pagination step.
+    tables = page.locator("table")
+    for index in range(await tables.count()):
+        table = tables.nth(index)
+        try:
+            if not await table.is_visible():
+                continue
+            header = await table.locator("tr").first.inner_text()
+            compact = "".join(header.split())
+            if "權證代碼" in compact and "權證名稱" in compact:
+                html = await table.evaluate("element => element.outerHTML")
+                return _clean_result_df(find_warrant_table(html))
+        except Exception:
+            continue
+    return pd.DataFrame()
 
 
 def _page_signature(df):
@@ -145,16 +159,29 @@ def _page_signature(df):
 
 
 async def _wait_for_page_change(page, previous_signature, timeout_ms=6000):
-    """Return as soon as the result rows change; avoid a fixed 1.8s wait."""
+    """Wait cheaply for the first result row to change, then parse once."""
     elapsed = 0
-    interval_ms = 100
+    interval_ms = 150
     while elapsed < timeout_ms:
         await page.wait_for_timeout(interval_ms)
         elapsed += interval_ms
-        current = await _read_current_page(page)
-        signature = _page_signature(current)
-        if signature is not None and signature != previous_signature:
-            return current
+        tables = page.locator("table")
+        for index in range(await tables.count()):
+            table = tables.nth(index)
+            try:
+                if not await table.is_visible():
+                    continue
+                rows = table.locator("tr")
+                if await rows.count() < 2:
+                    continue
+                header = "".join((await rows.first.inner_text()).split())
+                if "權證代碼" not in header:
+                    continue
+                first_row = await rows.nth(1).inner_text()
+                if previous_signature and previous_signature not in first_row:
+                    return await _read_current_page(page)
+            except Exception:
+                continue
     raise RuntimeError("切換分頁逾時，結果資料沒有更新。")
 
 
