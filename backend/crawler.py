@@ -131,26 +131,181 @@ def _page_signature(df):
     return str(df.iloc[0].to_dict())
 
 
-async def _wait_for_page_change(page, previous_smwß‹h‘éì¶»§q«^ud;ï#9`g9«h¹b!ºh xà ˆ‚ˆ
-Bˆœ™XZÂ‚ˆ™]š[İ\×ÜÚYÛ˜]\™HHÜYÙWÜÚYÛ˜]\™J[ÜYÙ\ÖËLWJBˆ]ØZ][šË˜ÛXÚÊ
-Bˆ›ˆH]ØZ]İØZ]Ù›Ü—ÜYÙWØÚ[™ÙJYÙK™]š[İ\×ÜÚYÛ˜]\™JB‚ˆYˆØ]™WÜØÜ™Y[œÚİ‚ˆ]ØZ]YÙKœØÜ™Y[œÚİ
-ˆ]\İŠˆĞÔ‘QS”ÒÕÑTˆÂˆˆÜŞ[X›ÛWÜYÙ^ÜYÙWÛ›ßKœ™È‚ˆ
-Kˆ[ÜYÙOUYBˆ
-B‚ˆš[
-ˆˆ–ØÜ˜]Û\—H9ë+ÜYÙWÛ›ßH:h y¢¤ùb,Û[Š›Š_H9ëaˆ‚ˆ
-B‚ˆYˆ›‹™[\N‚ˆœ™XZÂ‚ˆ[ÜYÙ\Ë˜\[™
-›ŠB‚ˆYˆ›İ[ÜYÙ\Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ¹§éz*h¹¢$9b§ûï#9/a¹¬¤¹§"y¢¤ùb,9.îù/ey«"º+bz,áù¥¦xà ˆŠB‚ˆ™\İ[H˜ÛÛ˜Ø]
-ˆ[ÜYÙ\ËˆYÛ›Ü™WÚ[™^UYKˆÛÜQ˜[ÙBˆ
-B‚ˆÈ9.éy«"º+by.èùè¯9c®úaãBˆÛÙWØÛÛH›Û™Bˆ›ÜˆÛÛ[ˆ™\İ[˜ÛÛ[[œÎ‚ˆÛÛ\XİHˆ‹š›Ú[ŠİŠÛÛ
-KœÜ]
+async def _wait_for_page_change(page, previous_signature, timeout_ms=6000):
+    """Return as soon as the result rows change; avoid a fixed 1.8s wait."""
+    elapsed = 0
+    interval_ms = 100
+    while elapsed < timeout_ms:
+        await page.wait_for_timeout(interval_ms)
+        elapsed += interval_ms
+        current = await _read_current_page(page)
+        signature = _page_signature(current)
+        if signature is not None and signature != previous_signature:
+            return current
+    raise RuntimeError("åˆ‡æ›åˆ†é é€¾æ™‚ï¼Œçµæœè³‡æ–™æ²’æœ‰æ›´æ–°ã€‚")
 
-JBˆYˆÛÛ\Xİ[ˆÈ¹«"º+by.èùè¯‹Ø\œ˜[ØÛÙHŸN‚ˆÛÙWØÛÛHÛÛˆœ™XZÂ‚ˆYˆÛÙWØÛÛ\È›İ›Û™N‚ˆ™\İ[H™\İ[™›ÜÙ\XØ]\ÊˆİXœÙ]VØÛÙWØÛÛKˆÙY\H™š\œİ‚ˆ
-B‚ˆ™\İ[H™\İ[œ™\Ù]Ú[™^
-›ÜUYJB‚ˆš[
-ˆˆ–ØÜ˜]Û\—H9d"9/myc®úaãyo£9alHÛ[Š™\İ[
-_H9ëaˆ‚ˆ
-B‚ˆ™]\›ˆ™\İ[‚ˆš[˜[N‚ˆ]ØZ]œ›İÜÙ\‹˜ÛÜÙJ
-B‚‚™YˆÜ˜]Û
-Ş[X›Û
-N‚ˆ™]\›ˆ\Ş[˜Ú[Ëœ[ŠÜ˜]ÛİØ\œ˜[ÊŞ[X›Û
-JB
+
+async def _visible_exact_page_link(page, page_no):
+    """å›å‚³ç›®å‰å¯è¦‹çš„åˆ†é æ•¸å­—é€£çµï¼›æ‰¾ä¸åˆ°å‰‡å›å‚³ Noneã€‚"""
+    links = page.locator("a").filter(
+        has_text=re.compile(rf"^{page_no}$")
+    )
+
+    for i in range(await links.count()):
+        link = links.nth(i)
+        try:
+            if await link.is_visible():
+                txt = (await link.inner_text()).strip()
+                if txt == str(page_no):
+                    return link
+        except Exception:
+            pass
+
+    return None
+
+
+async def _extract_total_count(page):
+    body = await page.locator("body").inner_text()
+    # å…ƒå¤§é é¢å¸¸è¦‹ï¼šç¸½ç­†æ•¸ï¼š94
+    m = re.search(r"ç¸½ç­†æ•¸\s*[:ï¼š]\s*(\d+)", body)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+async def crawl_warrants(symbol: str, save_screenshot=False):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=HEADLESS)
+        page = await browser.new_page(
+            viewport={"width": 1440, "height": 1000}
+        )
+
+        try:
+            await page.goto(
+                YUANTA_SEARCH_URL,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+            await page.wait_for_timeout(1500)
+
+            selected = await _select_underlying(page, symbol)
+            print(f"[crawler] å·²é¸å–æ¨™çš„ï¼š{selected}")
+
+            # å…ƒå¤§æœå°‹é é è¨­ç™¼è¡Œäººæ˜¯ã€Œå…ƒå¤§è­‰åˆ¸ã€
+            # æ”¹æˆã€Œå…¨éƒ¨ã€ï¼Œæ‰èƒ½å–å¾—æ‰€æœ‰åˆ¸å•†ç™¼è¡Œçš„æ¬Šè­‰
+            issuer = page.locator("select").nth(1)
+
+            await issuer.select_option(label="å…¨éƒ¨")
+            await page.wait_for_timeout(500)
+
+            issuer_text = (
+                await issuer.locator("option:checked").inner_text()
+            ).strip()
+
+            print(f"[crawler] ç™¼è¡Œäººï¼š{issuer_text}")
+
+            await _add_result_columns(page)
+            await _click_search(page)
+
+            if save_screenshot:
+                await page.screenshot(
+                    path=str(SCREENSHOT_DIR / f"{symbol}_page1.png"),
+                    full_page=True
+                )
+
+            total_count = await _extract_total_count(page)
+            if total_count is not None:
+                print(f"[crawler] å…ƒå¤§é¡¯ç¤ºç¸½ç­†æ•¸ï¼š{total_count}")
+
+            all_pages = []
+
+            # ç¬¬ 1 é 
+            df1 = await _read_current_page(page)
+            print(f"[crawler] ç¬¬ 1 é æŠ“åˆ° {len(df1)} ç­†")
+            if not df1.empty:
+                all_pages.append(df1)
+
+            # è‹¥å¯è®€åˆ°ç¸½ç­†æ•¸ï¼Œå…ƒå¤§ç›®å‰ç´„ 20 ç­†/é ï¼›
+            # å¦å‰‡æœ€å¤šå˜—è©¦ 20 é ï¼Œé‡åˆ°æ²’æœ‰ä¸‹ä¸€å€‹é ç¢¼å°±åœæ­¢ã€‚
+            if total_count:
+                max_pages = max(1, math.ceil(total_count / 20))
+            else:
+                max_pages = 20
+
+            for page_no in range(2, max_pages + 1):
+                link = await _visible_exact_page_link(page, page_no)
+
+                if link is None:
+                    # è‹¥ç¸½ç­†æ•¸æœªçŸ¥ï¼Œæ‰¾ä¸åˆ°ä¸‹ä¸€é å°±åœæ­¢ã€‚
+                    if total_count is None:
+                        break
+
+                    # æœ‰ç¸½ç­†æ•¸ä½†ç›®å‰çœ‹ä¸åˆ°é ç¢¼ï¼šå†ç¨ç­‰ä¸€æ¬¡ã€‚
+                    await page.wait_for_timeout(500)
+                    link = await _visible_exact_page_link(page, page_no)
+                    if link is None:
+                        print(
+                            f"[crawler] æ‰¾ä¸åˆ°ç¬¬ {page_no} é é€£çµï¼Œåœæ­¢åˆ†é ã€‚"
+                        )
+                        break
+
+                previous_signature = _page_signature(all_pages[-1])
+                await link.click()
+                dfn = await _wait_for_page_change(page, previous_signature)
+
+                if save_screenshot:
+                    await page.screenshot(
+                        path=str(
+                            SCREENSHOT_DIR /
+                            f"{symbol}_page{page_no}.png"
+                        ),
+                        full_page=True
+                    )
+
+                print(
+                    f"[crawler] ç¬¬ {page_no} é æŠ“åˆ° {len(dfn)} ç­†"
+                )
+
+                if dfn.empty:
+                    break
+
+                all_pages.append(dfn)
+
+            if not all_pages:
+                raise RuntimeError("æŸ¥è©¢æˆåŠŸï¼Œä½†æ²’æœ‰æŠ“åˆ°ä»»ä½•æ¬Šè­‰è³‡æ–™ã€‚")
+
+            result = pd.concat(
+                all_pages,
+                ignore_index=True,
+                sort=False
+            )
+
+            # ä»¥æ¬Šè­‰ä»£ç¢¼å»é‡
+            code_col = None
+            for col in result.columns:
+                compact = "".join(str(col).split())
+                if compact in {"æ¬Šè­‰ä»£ç¢¼", "warrant_code"}:
+                    code_col = col
+                    break
+
+            if code_col is not None:
+                result = result.drop_duplicates(
+                    subset=[code_col],
+                    keep="first"
+                )
+
+            result = result.reset_index(drop=True)
+
+            print(
+                f"[crawler] åˆä½µå»é‡å¾Œå…± {len(result)} ç­†"
+            )
+
+            return result
+
+        finally:
+            await browser.close()
+
+
+def crawl(symbol):
+    return asyncio.run(crawl_warrants(symbol))
+
