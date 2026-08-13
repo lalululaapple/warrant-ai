@@ -5,6 +5,7 @@ import math
 import traceback
 import asyncio
 import time
+import uuid
 
 from .crawler import crawl_warrants
 from .filter import filter_warrants
@@ -20,6 +21,8 @@ _search_cache = {}
 _search_locks = {}
 _crawler_lock = asyncio.Lock()
 _active_client_searches = {}
+_search_jobs = {}
+_client_jobs = {}
 
 
 class SearchRequest(BaseModel):
@@ -165,10 +168,13 @@ function f2(v){
     return Number.isFinite(n) ? n.toFixed(2) : v;
 }
 
-async function search(){
+async function search(resumeJobId){
 
-    const symbol =
-        document.getElementById("symbol").value.trim();
+    let symbol = document.getElementById("symbol").value.trim();
+    if(resumeJobId){
+        symbol = localStorage.getItem("warrantJobSymbol") || symbol;
+        document.getElementById("symbol").value = symbol;
+    }
 
     if(!symbol){
         return;
@@ -193,39 +199,49 @@ async function search(){
             localStorage.setItem("warrantClientId", clientId);
         }
 
-        const r = await fetch(
-            "/api/search",
-            {
+        let jobId = resumeJobId || "";
+        if(!jobId){
+            const started = await fetch("/api/search/start", {
                 method:"POST",
-                headers:{
-                    "Content-Type":"application/json"
-                },
-                body:JSON.stringify({
-                    symbol:symbol,
-                    client_id:clientId
-                })
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({symbol:symbol, client_id:clientId})
+            });
+            const startData = await started.json();
+            if(!started.ok){
+                throw new Error(startData.detail || "無法開始搜尋");
             }
-        );
+            jobId = startData.job_id;
+            localStorage.setItem("warrantJobId", jobId);
+            localStorage.setItem("warrantJobSymbol", symbol);
+        }
 
-        const raw = await r.text();
-        let d = {};
-        if(raw){
+        let d = null;
+        while(true){
+            let statusResponse;
             try{
-                d = JSON.parse(raw);
-            }catch(_error){
-                throw new Error("伺服器連線中斷，請稍後再試");
+                statusResponse = await fetch("/api/search/jobs/" + jobId);
+            }catch(_networkError){
+                // Mobile browsers pause networking while the screen is off.
+                // Keep the job id and retry after the browser wakes up.
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                continue;
             }
+            const statusData = await statusResponse.json();
+            if(!statusResponse.ok){
+                throw new Error(statusData.detail || "找不到背景搜尋工作");
+            }
+            if(statusData.status === "done"){
+                d = statusData.result;
+                break;
+            }
+            if(statusData.status === "failed"){
+                throw new Error(statusData.error || "搜尋失敗");
+            }
+            await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
-        if(!r.ok){
-            throw new Error(
-                d.detail || "伺服器暫時無法完成搜尋"
-            );
-        }
-
-        if(!raw){
-            throw new Error("伺服器沒有回傳資料，請稍後再試");
-        }
+        localStorage.removeItem("warrantJobId");
+        localStorage.removeItem("warrantJobSymbol");
 
         let h =
             '<div class="card">' +
@@ -381,6 +397,13 @@ async function search(){
     }
 }
 
+window.addEventListener("DOMContentLoaded", () => {
+    const jobId = localStorage.getItem("warrantJobId");
+    if(jobId){
+        search(jobId);
+    }
+});
+
 </script>
 
 </main>
@@ -411,6 +434,69 @@ def clean_value(value):
         pass
 
     return value
+
+
+async def _run_search_job(job_id, req):
+    job = _search_jobs[job_id]
+    try:
+        job["result"] = await search(req)
+        job["status"] = "done"
+    except asyncio.CancelledError:
+        job["status"] = "failed"
+        job["error"] = "這筆搜尋已被同一裝置的新搜尋取代"
+    except HTTPException as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc.detail)
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+
+
+@app.post("/api/search/start")
+async def start_search(req: SearchRequest):
+    symbol = req.symbol.strip()
+    client_id = req.client_id.strip()[:100]
+    if not symbol:
+        raise HTTPException(status_code=400, detail="請輸入股票代號")
+
+    # Keep completed background results long enough for a sleeping phone to
+    # reconnect, without growing memory forever.
+    cutoff = time.monotonic() - 1800
+    for old_id, old_job in list(_search_jobs.items()):
+        if old_job["status"] != "running" and old_job["created"] < cutoff:
+            _search_jobs.pop(old_id, None)
+
+    previous_id = _client_jobs.get(client_id) if client_id else None
+    previous = _search_jobs.get(previous_id) if previous_id else None
+    if previous and previous["status"] == "running":
+        previous["task"].cancel()
+
+    job_id = uuid.uuid4().hex
+    job = {
+        "status": "running",
+        "symbol": symbol,
+        "created": time.monotonic(),
+        "result": None,
+        "error": None,
+    }
+    _search_jobs[job_id] = job
+    if client_id:
+        _client_jobs[client_id] = job_id
+    job["task"] = asyncio.create_task(_run_search_job(job_id, req))
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/search/jobs/{job_id}")
+async def search_job_status(job_id: str):
+    job = _search_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="背景搜尋已不存在，請重新搜尋")
+    return {
+        "status": job["status"],
+        "symbol": job["symbol"],
+        "result": job["result"],
+        "error": job["error"],
+    }
 
 
 @app.post("/api/search")
