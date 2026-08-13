@@ -18,6 +18,7 @@ app = FastAPI(title="Warrant AI v1.1")
 SEARCH_CACHE_TTL = 300
 _search_cache = {}
 _search_locks = {}
+_crawler_lock = asyncio.Lock()
 
 
 class SearchRequest(BaseModel):
@@ -195,12 +196,24 @@ async function search(){
             }
         );
 
-        const d = await r.json();
+        const raw = await r.text();
+        let d = {};
+        if(raw){
+            try{
+                d = JSON.parse(raw);
+            }catch(_error){
+                throw new Error("伺服器連線中斷，請稍後再試");
+            }
+        }
 
         if(!r.ok){
             throw new Error(
-                d.detail || "搜尋失敗"
+                d.detail || "伺服器暫時無法完成搜尋"
             );
+        }
+
+        if(!raw){
+            throw new Error("伺服器沒有回傳資料，請稍後再試");
         }
 
         let h =
@@ -410,19 +423,30 @@ async def search(req: SearchRequest):
             df = cached[1].copy()
             print(f"[cache] 使用 {symbol} 的近期搜尋結果")
         else:
-            # Prevent two phone/browser requests for the same symbol from
-            # starting two memory-heavy Chromium sessions at once.
+            # Same-symbol requests share one crawl and then reuse its cache.
             lock = _search_locks.setdefault(symbol, asyncio.Lock())
             async with lock:
                 cached = _search_cache.get(symbol)
                 if cached and time.monotonic() - cached[0] < SEARCH_CACHE_TTL:
                     df = cached[1].copy()
                 else:
-                    df = await crawl_warrants(
-                        symbol,
-                        save_screenshot=False,
-                        page_filter=filter_warrants,
-                    )
+                    # Render Free cannot safely hold two Chromium instances.
+                    # Reject a different cold search instead of allowing both
+                    # workers to be killed by the platform.
+                    if _crawler_lock.locked():
+                        raise HTTPException(
+                            status_code=429,
+                            detail=(
+                                "目前有另一筆搜尋正在進行，"
+                                "請等它完成後再搜尋。"
+                            ),
+                        )
+                    async with _crawler_lock:
+                        df = await crawl_warrants(
+                            symbol,
+                            save_screenshot=False,
+                            page_filter=filter_warrants,
+                        )
                     _search_cache[symbol] = (time.monotonic(), df.copy())
 
         # 2. 第一層硬條件粗篩
@@ -525,6 +549,9 @@ async def search(req: SearchRequest):
             "excel": str(path),
             "results": records
         }
+
+    except HTTPException:
+        raise
 
     except Exception as exc:
 
