@@ -167,6 +167,19 @@ function f2(v){
     return Number.isFinite(n) ? n.toFixed(2) : v;
 }
 
+async function cancelSearch(){
+    const jobId = localStorage.getItem("warrantJobId");
+    if(!jobId){ return; }
+    await fetch("/api/search/jobs/" + jobId + "/cancel", {method:"POST"});
+    localStorage.removeItem("warrantJobId");
+    localStorage.removeItem("warrantJobSymbol");
+    document.getElementById("result").innerHTML =
+        '<div class="card">搜尋已取消，可以重新輸入股票。</div>';
+    const btn = document.getElementById("searchBtn");
+    btn.disabled = false;
+    btn.innerText = "開始搜尋";
+}
+
 async function search(resumeJobId){
 
     let symbol = document.getElementById("symbol").value.trim();
@@ -233,9 +246,18 @@ async function search(resumeJobId){
                 d = statusData.result;
                 break;
             }
-            if(statusData.status === "failed"){
+            if(statusData.status === "failed" || statusData.status === "cancelled"){
                 throw new Error(statusData.error || "搜尋失敗");
             }
+            const current = statusData.current_page || 0;
+            const total = statusData.total_pages || 0;
+            const name = statusData.underlying || symbol;
+            const progressText = total
+                ? '正在搜尋 ' + name + '：已抓取 ' + current + ' / ' + total + ' 頁'
+                : '正在準備 ' + name + ' 的權證資料…';
+            document.getElementById("result").innerHTML =
+                '<div class="card"><p>' + progressText + '</p>' +
+                '<button type="button" onclick="cancelSearch()">取消搜尋</button></div>';
             await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
@@ -441,8 +463,8 @@ async def _run_search_job(job_id, req):
         job["result"] = await search(req)
         job["status"] = "done"
     except asyncio.CancelledError:
-        job["status"] = "failed"
-        job["error"] = "這筆搜尋已被同一裝置的新搜尋取代"
+        job["status"] = "cancelled"
+        job["error"] = "搜尋已取消"
     except HTTPException as exc:
         job["status"] = "failed"
         job["error"] = str(exc.detail)
@@ -477,6 +499,9 @@ async def start_search(req: SearchRequest):
         "created": time.monotonic(),
         "result": None,
         "error": None,
+        "current_page": 0,
+        "total_pages": 0,
+        "underlying": symbol,
     }
     _search_jobs[job_id] = job
     if client_id:
@@ -495,7 +520,20 @@ async def search_job_status(job_id: str):
         "symbol": job["symbol"],
         "result": job["result"],
         "error": job["error"],
+        "current_page": job["current_page"],
+        "total_pages": job["total_pages"],
+        "underlying": job["underlying"],
     }
+
+
+@app.post("/api/search/jobs/{job_id}/cancel")
+async def cancel_search_job(job_id: str):
+    job = _search_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="背景搜尋已不存在")
+    if job["status"] == "running":
+        job["task"].cancel()
+    return {"status": "cancelled"}
 
 
 @app.post("/api/search")
@@ -557,11 +595,20 @@ async def search(req: SearchRequest):
                             ),
                         )
                     async with _crawler_lock:
+                        async def report_progress(current, total, underlying):
+                            job_id = _client_jobs.get(client_id)
+                            job = _search_jobs.get(job_id) if job_id else None
+                            if job and job["status"] == "running":
+                                job["current_page"] = current
+                                job["total_pages"] = total
+                                job["underlying"] = underlying
+
                         crawl_task = asyncio.create_task(
                             crawl_warrants(
                                 symbol,
                                 save_screenshot=False,
                                 page_filter=filter_warrants,
+                                progress_callback=report_progress,
                             )
                         )
                         if client_id:
