@@ -133,13 +133,12 @@ td:nth-child(2){
 <h1>Warrant AI v1.1</h1>
 
 <p>
-輸入股票代號，例如：3189（景碩）
+輸入股票代號或中文名稱，例如：2330、台積電
 </p>
 
 <input
     id="symbol"
-    placeholder="輸入股票代號，例如 3189"
-    inputmode="numeric"
+    placeholder="例如：2330 或 台積電"
 />
 
 <button id="searchBtn" onclick="search()">
@@ -246,7 +245,7 @@ async function search(resumeJobId){
         let h =
             '<div class="card">' +
             '<h2>' +
-            symbol +
+            f(d.symbol || symbol) +
             ' 權證排行榜' +
             '</h2>';
 
@@ -580,12 +579,13 @@ async def search(req: SearchRequest):
 
         # 2. 第一層硬條件粗篩
         filtered = filter_warrants(df)
+        resolved_symbol = str(df.attrs.get("symbol", symbol))
 
         # 3. 評分
         scored = score_dataframe(filtered)
 
         # 4. 匯出 Excel
-        path = export_excel(scored, symbol)
+        path = export_excel(scored, resolved_symbol)
 
         # 5. 顯示全部符合條件的權證，保留排名順序
         results = scored.copy()
@@ -673,7 +673,7 @@ async def search(req: SearchRequest):
             records.append(record)
 
         return {
-            "symbol": symbol,
+            "symbol": resolved_symbol,
             "total": int(len(scored)),
             "excel": str(path),
             "results": records
