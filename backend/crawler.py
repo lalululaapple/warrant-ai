@@ -173,12 +173,29 @@ async def _extract_total_count(page):
     return None
 
 
-async def crawl_warrants(symbol: str, save_screenshot=False):
+async def crawl_warrants(symbol: str, save_screenshot=False, page_filter=None):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-sandbox",
+            ],
+        )
         page = await browser.new_page(
             viewport={"width": 1440, "height": 1000}
         )
+
+        # The search page does not need images, media or web fonts. Blocking
+        # them lowers Chromium memory usage on small Render instances.
+        async def block_heavy_resources(route):
+            if route.request.resource_type in {"image", "media", "font"}:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await page.route("**/*", block_heavy_resources)
 
         try:
             await page.goto(
@@ -217,13 +234,24 @@ async def crawl_warrants(symbol: str, save_screenshot=False):
             if total_count is not None:
                 print(f"[crawler] 元大顯示總筆數：{total_count}")
 
-            all_pages = []
+            kept_pages = []
+
+            def keep_page(df):
+                if page_filter is None or df.empty:
+                    return df
+                # Apply the exact same application hard filter immediately,
+                # so rejected rows do not stay resident for all 58+ pages.
+                return page_filter(df)
 
             # 第 1 頁
             df1 = await _read_current_page(page)
             print(f"[crawler] 第 1 頁抓到 {len(df1)} 筆")
-            if not df1.empty:
-                all_pages.append(df1)
+            empty_result = df1.iloc[0:0].copy()
+            previous_signature = _page_signature(df1)
+            kept = keep_page(df1)
+            if not kept.empty:
+                kept_pages.append(kept)
+            del df1, kept
 
             # 若可讀到總筆數，元大目前約 20 筆/頁；
             # 否則最多嘗試 20 頁，遇到沒有下一個頁碼就停止。
@@ -249,7 +277,6 @@ async def crawl_warrants(symbol: str, save_screenshot=False):
                         )
                         break
 
-                previous_signature = _page_signature(all_pages[-1])
                 await link.click()
                 dfn = await _wait_for_page_change(page, previous_signature)
 
@@ -269,13 +296,20 @@ async def crawl_warrants(symbol: str, save_screenshot=False):
                 if dfn.empty:
                     break
 
-                all_pages.append(dfn)
+                previous_signature = _page_signature(dfn)
+                kept = keep_page(dfn)
+                if not kept.empty:
+                    kept_pages.append(kept)
+                del dfn, kept
 
-            if not all_pages:
+            if not kept_pages:
+                # A valid search can legitimately have zero hard-filter hits.
+                if page_filter is not None:
+                    return empty_result
                 raise RuntimeError("查詢成功，但沒有抓到任何權證資料。")
 
             result = pd.concat(
-                all_pages,
+                kept_pages,
                 ignore_index=True,
                 sort=False
             )
