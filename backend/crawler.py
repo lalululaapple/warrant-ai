@@ -282,13 +282,20 @@ async def crawl_warrants(
                 print(f"[crawler] 元大顯示總筆數：{total_count}")
 
             kept_pages = []
+            accumulated_filter_stats = {}
 
             def keep_page(df):
                 if page_filter is None or df.empty:
                     return df
-                # Apply the exact same application hard filter immediately,
-                # so rejected rows do not stay resident for all 58+ pages.
-                return page_filter(df)
+                filtered = page_filter(df)
+                if isinstance(filtered, tuple):
+                    kept, page_stats = filtered
+                    for name, value in page_stats.items():
+                        accumulated_filter_stats[name] = (
+                            accumulated_filter_stats.get(name, 0) + int(value)
+                        )
+                    return kept
+                return filtered
 
             # 第 1 頁
             df1 = await _read_current_page(page)
@@ -360,6 +367,7 @@ async def crawl_warrants(
                 if page_filter is not None:
                     empty_result.attrs["symbol"] = resolved_symbol
                     empty_result.attrs["underlying"] = selected
+                    empty_result.attrs["filter_stats"] = accumulated_filter_stats
                     return empty_result
                 raise RuntimeError("查詢成功，但沒有抓到任何權證資料。")
 
@@ -386,6 +394,7 @@ async def crawl_warrants(
             result = result.reset_index(drop=True)
             result.attrs["symbol"] = resolved_symbol
             result.attrs["underlying"] = selected
+            result.attrs["filter_stats"] = accumulated_filter_stats
 
             print(
                 f"[crawler] 合併去重後共 {len(result)} 筆"
