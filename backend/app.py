@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .crawler import crawl_warrants
-from .filter import filter_warrants
+from .filter import coarse_filter_counts, filter_warrants
 from .score import score_dataframe
 from .report import export_excel
 
@@ -325,6 +325,17 @@ async function search(resumeJobId){
             '價內 0～10%／價外 0～15%、行使比例 0.01～0.05、' +
             '剩餘天數 ≥ 60、買賣價差比 ≤ 1.5%、' +
             '實質槓桿 2～4 倍、成交價 &gt; 0</div>';
+
+        const stats = d.filter_stats || {};
+        h += '<div class="filter-summary"><b>篩選淘汰統計（累積通過）</b><br>' +
+            '原始資料：' + f(stats.raw) + ' 檔 → ' +
+            '價內外：' + f(stats.moneyness) + ' 檔 → ' +
+            '成交價：' + f(stats.price) + ' 檔 → ' +
+            '行使比例：' + f(stats.ratio) + ' 檔 → ' +
+            '剩餘天數：' + f(stats.days) + ' 檔 → ' +
+            '價差比：' + f(stats.spread) + ' 檔 → ' +
+            '實質槓桿：' + f(stats.leverage) + ' 檔 → ' +
+            '<b>最後符合：' + f(stats.final) + ' 檔</b></div>';
 
         h += '<button class="column-toggle" type="button" ' +
             'onclick="toggleColumns(this)">顯示完整欄位</button>';
@@ -658,6 +669,12 @@ async def search(req: SearchRequest):
                             ),
                         )
                     async with _crawler_lock:
+                        def filter_page_with_stats(page_df):
+                            return (
+                                filter_warrants(page_df),
+                                coarse_filter_counts(page_df),
+                            )
+
                         async def report_progress(current, total, underlying):
                             job_id = _client_jobs.get(client_id)
                             job = _search_jobs.get(job_id) if job_id else None
@@ -670,7 +687,7 @@ async def search(req: SearchRequest):
                             crawl_warrants(
                                 symbol,
                                 save_screenshot=False,
-                                page_filter=filter_warrants,
+                                page_filter=filter_page_with_stats,
                                 progress_callback=report_progress,
                             )
                         )
@@ -789,6 +806,7 @@ async def search(req: SearchRequest):
         updated_at = df.attrs.get("updated_at") or datetime.now(
             ZoneInfo("Asia/Taipei")
         ).strftime("%Y/%m/%d %H:%M:%S")
+        filter_stats = df.attrs.get("filter_stats") or coarse_filter_counts(df)
         print(
             f"[search] symbol={resolved_symbol} results={len(scored)} "
             f"elapsed={elapsed_seconds}s status=success"
@@ -800,6 +818,7 @@ async def search(req: SearchRequest):
             "excel": str(path),
             "updated_at": updated_at,
             "elapsed_seconds": elapsed_seconds,
+            "filter_stats": filter_stats,
             "results": records
         }
 
