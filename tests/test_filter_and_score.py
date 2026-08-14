@@ -3,7 +3,7 @@ import unittest
 
 import pandas as pd
 
-from backend.filter import coarse_filter_mask, filter_warrants
+from backend.filter import coarse_filter_counts, coarse_filter_mask, filter_warrants
 from backend.parser import normalize_dataframe
 from backend.score import score_dataframe
 
@@ -29,6 +29,15 @@ class FilterTests(unittest.TestCase):
         row = self.cases.iloc[[0]].copy()
         row[["delta", "theta", "bid_iv", "ask_iv"]] = float("nan")
         self.assertTrue(bool(coarse_filter_mask(row).iloc[0]))
+
+    def test_filter_counts_are_cumulative_and_match_final_result(self):
+        counts = coarse_filter_counts(self.cases)
+        ordered = [
+            counts[name] for name in
+            ("raw", "moneyness", "price", "ratio", "days", "spread", "leverage", "final")
+        ]
+        self.assertEqual(ordered, sorted(ordered, reverse=True))
+        self.assertEqual(counts["final"], len(filter_warrants(self.cases)))
 
 
 class ParserTests(unittest.TestCase):
@@ -97,3 +106,4 @@ class ScoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
