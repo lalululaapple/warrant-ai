@@ -16,6 +16,9 @@ MIN_DAYS = 60.0
 MAX_SPREAD = 1.5
 LEVERAGE_MIN = 2.0
 LEVERAGE_MAX = 4.0
+BACKUP_MAX_SPREAD = 2.0
+BACKUP_LEVERAGE_MIN = 1.5
+BACKUP_LEVERAGE_MAX = 5.0
 
 
 def _compact(value: object) -> str:
@@ -46,7 +49,13 @@ def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
-def _coarse_filter_conditions(df: pd.DataFrame) -> dict[str, pd.Series]:
+def _coarse_filter_conditions(
+    df: pd.DataFrame,
+    *,
+    max_spread: float = MAX_SPREAD,
+    leverage_min: float = LEVERAGE_MIN,
+    leverage_max: float = LEVERAGE_MAX,
+) -> dict[str, pd.Series]:
     """Return each hard-filter condition in the displayed evaluation order."""
     moneyness_col = _find_column(df, ("moneyness", "價內外程度", "價內外"))
     moneyness_pct_col = _find_column(df, ("moneyness_pct",))
@@ -74,8 +83,8 @@ def _coarse_filter_conditions(df: pd.DataFrame) -> dict[str, pd.Series]:
         "price": price.gt(0).fillna(False),
         "ratio": ratio.between(RATIO_MIN, RATIO_MAX).fillna(False),
         "days": days.ge(MIN_DAYS).fillna(False),
-        "spread": spread.le(MAX_SPREAD).fillna(False),
-        "leverage": leverage.between(LEVERAGE_MIN, LEVERAGE_MAX).fillna(False),
+        "spread": spread.le(max_spread).fillna(False),
+        "leverage": leverage.between(leverage_min, leverage_max).fillna(False),
     }
 
 
@@ -86,6 +95,23 @@ def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
 
     mask = pd.Series(True, index=df.index, dtype=bool)
     for condition in _coarse_filter_conditions(df).values():
+        mask &= condition
+    return mask.fillna(False)
+
+
+def backup_filter_mask(df: pd.DataFrame) -> pd.Series:
+    """Return the relaxed backup mask while retaining all safety filters."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    mask = pd.Series(True, index=df.index, dtype=bool)
+    conditions = _coarse_filter_conditions(
+        df,
+        max_spread=BACKUP_MAX_SPREAD,
+        leverage_min=BACKUP_LEVERAGE_MIN,
+        leverage_max=BACKUP_LEVERAGE_MAX,
+    )
+    for condition in conditions.values():
         mask &= condition
     return mask.fillna(False)
 
@@ -112,4 +138,12 @@ def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     return df.loc[coarse_filter_mask(df)].copy().reset_index(drop=True)
+
+
+def filter_backup_warrants(df: pd.DataFrame) -> pd.DataFrame:
+    """Return relaxed matches that are not already strict recommendations."""
+    if df.empty:
+        return df.copy()
+    mask = backup_filter_mask(df) & ~coarse_filter_mask(df)
+    return df.loc[mask].copy().reset_index(drop=True)
 

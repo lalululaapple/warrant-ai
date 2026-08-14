@@ -6,11 +6,17 @@ import traceback
 import asyncio
 import time
 import uuid
+import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .crawler import crawl_warrants
-from .filter import coarse_filter_counts, filter_warrants
+from .filter import (
+    backup_filter_mask,
+    coarse_filter_counts,
+    filter_backup_warrants,
+    filter_warrants,
+)
 from .score import score_dataframe
 from .report import export_excel
 
@@ -313,9 +319,8 @@ async function search(resumeJobId){
 
         h +=
             '<p class="success">' +
-            '共找到 ' +
-            f(d.total) +
-            ' 筆資料' +
+            '優先推薦 ' + f(d.priority_total) + ' 檔｜' +
+            '備選名單 ' + f(d.backup_total) + ' 檔' +
             '</p>';
 
         h += '<p class="meta">資料來源：元大權證｜更新時間：' +
@@ -325,6 +330,11 @@ async function search(resumeJobId){
             '價內 0～10%／價外 0～15%、行使比例 0.01～0.05、' +
             '剩餘天數 ≥ 60、買賣價差比 ≤ 1.5%、' +
             '實質槓桿 2～4 倍、成交價 &gt; 0</div>';
+
+        h += '<div class="filter-summary"><b>備選條件</b><br>' +
+            '其餘條件相同（成交價仍須 &gt; 0），僅放寬為：' +
+            '買賣價差比 ≤ 2.0%、實質槓桿 1.5～5 倍。' +
+            '已列入優先推薦者不會重複出現。</div>';
 
         const stats = d.filter_stats || {};
         h += '<div class="filter-summary"><b>篩選淘汰統計（累積通過）</b><br>' +
@@ -367,7 +377,17 @@ async function search(resumeJobId){
             '<th>Score</th>' +
             '</tr>';
 
+        let currentTier = '';
         for(const x of d.results){
+
+            if(x.recommendation_tier !== currentTier){
+                currentTier = x.recommendation_tier;
+                const tierLabel = currentTier === 'priority'
+                    ? '優先推薦（完全符合原條件）'
+                    : '備選名單（價差 ≤ 2.0%、槓桿 1.5～5 倍）';
+                h += '<tr><td colspan="20" style="font-weight:700;' +
+                    'background:#f2f6f3;text-align:left">' + tierLabel + '</td></tr>';
+            }
 
             h +=
                 '<tr>' +
@@ -671,7 +691,7 @@ async def search(req: SearchRequest):
                     async with _crawler_lock:
                         def filter_page_with_stats(page_df):
                             return (
-                                filter_warrants(page_df),
+                                page_df.loc[backup_filter_mask(page_df)].copy(),
                                 coarse_filter_counts(page_df),
                             )
 
@@ -709,16 +729,24 @@ async def search(req: SearchRequest):
 
         # 2. 第一層硬條件粗篩
         filtered = filter_warrants(df)
+        backup_filtered = filter_backup_warrants(df)
         resolved_symbol = str(df.attrs.get("symbol", symbol))
 
         # 3. 評分
         scored = score_dataframe(filtered)
+        backup_scored = score_dataframe(backup_filtered)
 
         # 4. 匯出 Excel
         path = export_excel(scored, resolved_symbol)
 
         # 5. 顯示全部符合條件的權證，保留排名順序
         results = scored.copy()
+        results["recommendation_tier"] = "priority"
+        backup_results = backup_scored.copy()
+        backup_results["recommendation_tier"] = "backup"
+        results = pd.concat(
+            [results, backup_results], ignore_index=True
+        )
 
         # 6. NaN -> None
         records = []
@@ -808,13 +836,16 @@ async def search(req: SearchRequest):
         ).strftime("%Y/%m/%d %H:%M:%S")
         filter_stats = df.attrs.get("filter_stats") or coarse_filter_counts(df)
         print(
-            f"[search] symbol={resolved_symbol} results={len(scored)} "
+            f"[search] symbol={resolved_symbol} priority={len(scored)} "
+            f"backup={len(backup_scored)} "
             f"elapsed={elapsed_seconds}s status=success"
         )
 
         return {
             "symbol": resolved_symbol,
-            "total": int(len(scored)),
+            "total": int(len(scored) + len(backup_scored)),
+            "priority_total": int(len(scored)),
+            "backup_total": int(len(backup_scored)),
             "excel": str(path),
             "updated_at": updated_at,
             "elapsed_seconds": elapsed_seconds,

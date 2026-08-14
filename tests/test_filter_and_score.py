@@ -3,7 +3,13 @@ import unittest
 
 import pandas as pd
 
-from backend.filter import coarse_filter_counts, coarse_filter_mask, filter_warrants
+from backend.filter import (
+    backup_filter_mask,
+    coarse_filter_counts,
+    coarse_filter_mask,
+    filter_backup_warrants,
+    filter_warrants,
+)
 from backend.parser import normalize_dataframe
 from backend.score import score_dataframe
 
@@ -38,6 +44,18 @@ class FilterTests(unittest.TestCase):
         ]
         self.assertEqual(ordered, sorted(ordered, reverse=True))
         self.assertEqual(counts["final"], len(filter_warrants(self.cases)))
+
+    def test_backup_only_relaxes_spread_and_leverage(self):
+        result = filter_backup_warrants(self.cases)
+        self.assertEqual(
+            result["warrant_code"].tolist(),
+            ["F006", "F007", "F008"],
+        )
+
+    def test_backup_still_requires_positive_price(self):
+        no_price = self.cases.iloc[[0]].copy()
+        no_price["price"] = float("nan")
+        self.assertFalse(bool(backup_filter_mask(no_price).iloc[0]))
 
 
 class ParserTests(unittest.TestCase):
