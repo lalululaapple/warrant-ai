@@ -6,6 +6,8 @@ import traceback
 import asyncio
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .crawler import crawl_warrants
 from .filter import filter_warrants
@@ -121,6 +123,37 @@ td:nth-child(2){
 .success{
     color:#087f23
 }
+
+.meta{
+    color:#666;
+    font-size:14px
+}
+
+.filter-summary{
+    background:#f7f8fa;
+    border-radius:10px;
+    padding:10px 14px;
+    margin:10px 0 14px;
+    font-size:14px;
+    line-height:1.7
+}
+
+.column-toggle{
+    width:auto;
+    padding:8px 12px;
+    margin:0 0 10px;
+    background:#555;
+    font-size:14px
+}
+
+@media (max-width:700px){
+    main{padding:10px}
+    table{min-width:680px}
+    .results-table:not(.show-all) th:nth-child(n+8):not(:nth-child(20)),
+    .results-table:not(.show-all) td:nth-child(n+8):not(:nth-child(20)){
+        display:none
+    }
+}
 </style>
 </head>
 
@@ -165,6 +198,13 @@ function f2(v){
 
     const n = Number(v);
     return Number.isFinite(n) ? n.toFixed(2) : v;
+}
+
+function toggleColumns(button){
+    const table = document.querySelector(".results-table");
+    if(!table){ return; }
+    const expanded = table.classList.toggle("show-all");
+    button.innerText = expanded ? "顯示精簡欄位" : "顯示完整欄位";
 }
 
 async function cancelSearch(){
@@ -278,9 +318,20 @@ async function search(resumeJobId){
             ' 筆資料' +
             '</p>';
 
+        h += '<p class="meta">資料來源：元大權證｜更新時間：' +
+            f(d.updated_at) + '｜搜尋耗時：' + f2(d.elapsed_seconds) + ' 秒</p>';
+
+        h += '<div class="filter-summary"><b>固定篩選條件</b><br>' +
+            '價內 0～10%／價外 0～15%、行使比例 0.01～0.05、' +
+            '剩餘天數 ≥ 60、買賣價差比 ≤ 1.5%、' +
+            '實質槓桿 2～4 倍、成交價 &gt; 0</div>';
+
+        h += '<button class="column-toggle" type="button" ' +
+            'onclick="toggleColumns(this)">顯示完整欄位</button>';
+
         h +=
             '<div class="table-wrap">' +
-            '<table>' +
+            '<table class="results-table">' +
 
             '<tr>' +
             '<th>排名</th>' +
@@ -548,6 +599,8 @@ async def search(req: SearchRequest):
             detail="請輸入股票代號"
         )
 
+    search_started = time.perf_counter()
+
     try:
 
         # Reloading/closing a page aborts the browser's wait but does not
@@ -622,6 +675,9 @@ async def search(req: SearchRequest):
                                 is crawl_task
                             ):
                                 _active_client_searches.pop(client_id, None)
+                    df.attrs["updated_at"] = datetime.now(
+                        ZoneInfo("Asia/Taipei")
+                    ).strftime("%Y/%m/%d %H:%M:%S")
                     _search_cache[symbol] = (time.monotonic(), df.copy())
 
         # 2. 第一層硬條件粗篩
@@ -719,10 +775,21 @@ async def search(req: SearchRequest):
 
             records.append(record)
 
+        elapsed_seconds = round(time.perf_counter() - search_started, 2)
+        updated_at = df.attrs.get("updated_at") or datetime.now(
+            ZoneInfo("Asia/Taipei")
+        ).strftime("%Y/%m/%d %H:%M:%S")
+        print(
+            f"[search] symbol={resolved_symbol} results={len(scored)} "
+            f"elapsed={elapsed_seconds}s status=success"
+        )
+
         return {
             "symbol": resolved_symbol,
             "total": int(len(scored)),
             "excel": str(path),
+            "updated_at": updated_at,
+            "elapsed_seconds": elapsed_seconds,
             "results": records
         }
 
@@ -730,6 +797,12 @@ async def search(req: SearchRequest):
         raise
 
     except Exception as exc:
+
+        elapsed_seconds = round(time.perf_counter() - search_started, 2)
+        print(
+            f"[search] symbol={symbol} elapsed={elapsed_seconds}s "
+            f"status=failed error={exc!r}"
+        )
 
         print("")
         print("=" * 70)
