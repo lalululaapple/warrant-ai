@@ -470,6 +470,16 @@ async function search(resumeJobId){
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("symbol").addEventListener("keydown", event => {
+        if(event.key === "Enter" && !event.isComposing){
+            event.preventDefault();
+            const button = document.getElementById("searchBtn");
+            if(!button.disabled){
+                search();
+            }
+        }
+    });
+
     const jobId = localStorage.getItem("warrantJobId");
     if(jobId){
         search(jobId);
