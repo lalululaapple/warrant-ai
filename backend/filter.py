@@ -46,11 +46,8 @@ def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
-def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
-    """Return the verified first-stage hard-filter mask."""
-    if df.empty:
-        return pd.Series(False, index=df.index, dtype=bool)
-
+def _coarse_filter_conditions(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """Return each hard-filter condition in the displayed evaluation order."""
     moneyness_col = _find_column(df, ("moneyness", "價內外程度", "價內外"))
     moneyness_pct_col = _find_column(df, ("moneyness_pct",))
     price_col = _find_column(df, ("price", "成交價"))
@@ -72,14 +69,42 @@ def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
         | (moneyness.str.contains("價外", na=False) & moneyness_pct.between(0, MONEYNESS_OTM_MAX))
     )
 
-    return (
-        acceptable_moneyness
-        & price.gt(0)
-        & ratio.between(RATIO_MIN, RATIO_MAX)
-        & days.ge(MIN_DAYS)
-        & spread.le(MAX_SPREAD)
-        & leverage.between(LEVERAGE_MIN, LEVERAGE_MAX)
-    ).fillna(False)
+    return {
+        "moneyness": acceptable_moneyness.fillna(False),
+        "price": price.gt(0).fillna(False),
+        "ratio": ratio.between(RATIO_MIN, RATIO_MAX).fillna(False),
+        "days": days.ge(MIN_DAYS).fillna(False),
+        "spread": spread.le(MAX_SPREAD).fillna(False),
+        "leverage": leverage.between(LEVERAGE_MIN, LEVERAGE_MAX).fillna(False),
+    }
+
+
+def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
+    """Return the verified first-stage hard-filter mask."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    mask = pd.Series(True, index=df.index, dtype=bool)
+    for condition in _coarse_filter_conditions(df).values():
+        mask &= condition
+    return mask.fillna(False)
+
+
+def coarse_filter_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Return cumulative pass counts after each fixed hard-filter condition."""
+    counts = {"raw": int(len(df))}
+    if df.empty:
+        for name in ("moneyness", "price", "ratio", "days", "spread", "leverage"):
+            counts[name] = 0
+        counts["final"] = 0
+        return counts
+
+    mask = pd.Series(True, index=df.index, dtype=bool)
+    for name, condition in _coarse_filter_conditions(df).items():
+        mask &= condition
+        counts[name] = int(mask.sum())
+    counts["final"] = int(mask.sum())
+    return counts
 
 
 def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
@@ -87,3 +112,4 @@ def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     return df.loc[coarse_filter_mask(df)].copy().reset_index(drop=True)
+
