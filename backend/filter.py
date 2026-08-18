@@ -16,9 +16,6 @@ MIN_DAYS = 60.0
 MAX_SPREAD = 1.5
 LEVERAGE_MIN = 2.0
 LEVERAGE_MAX = 4.0
-BACKUP_MAX_SPREAD = 2.0
-BACKUP_LEVERAGE_MIN = 1.5
-BACKUP_LEVERAGE_MAX = 5.0
 
 
 def _compact(value: object) -> str:
@@ -51,10 +48,6 @@ def _numeric(series: pd.Series) -> pd.Series:
 
 def _coarse_filter_conditions(
     df: pd.DataFrame,
-    *,
-    max_spread: float = MAX_SPREAD,
-    leverage_min: float = LEVERAGE_MIN,
-    leverage_max: float = LEVERAGE_MAX,
 ) -> dict[str, pd.Series]:
     """Return each hard-filter condition in the displayed evaluation order."""
     moneyness_col = _find_column(df, ("moneyness", "價內外程度", "價內外"))
@@ -63,7 +56,6 @@ def _coarse_filter_conditions(
     ratio_col = _find_column(df, ("ratio", "行使比例"))
     days_col = _find_column(df, ("days", "剩餘天數", "剩餘日"))
     spread_col = _find_column(df, ("spread", "買賣價差比", "買賣價差比%"))
-    leverage_col = _find_column(df, ("leverage", "實質槓桿"))
 
     moneyness = df[moneyness_col].astype("string")
     moneyness_pct = _numeric(df[moneyness_pct_col])
@@ -71,7 +63,6 @@ def _coarse_filter_conditions(
     ratio = _numeric(df[ratio_col])
     days = _numeric(df[days_col])
     spread = _numeric(df[spread_col])
-    leverage = _numeric(df[leverage_col])
 
     acceptable_moneyness = (
         (moneyness.str.contains("價內", na=False) & moneyness_pct.between(0, MONEYNESS_ITM_MAX))
@@ -83,8 +74,7 @@ def _coarse_filter_conditions(
         "price": price.gt(0).fillna(False),
         "ratio": ratio.between(RATIO_MIN, RATIO_MAX).fillna(False),
         "days": days.ge(MIN_DAYS).fillna(False),
-        "spread": spread.le(max_spread).fillna(False),
-        "leverage": leverage.between(leverage_min, leverage_max).fillna(False),
+        "spread": spread.le(MAX_SPREAD).fillna(False),
     }
 
 
@@ -99,29 +89,26 @@ def coarse_filter_mask(df: pd.DataFrame) -> pd.Series:
     return mask.fillna(False)
 
 
-def backup_filter_mask(df: pd.DataFrame) -> pd.Series:
-    """Return the relaxed backup mask while retaining all safety filters."""
+def fine_filter_mask(df: pd.DataFrame) -> pd.Series:
+    """Return coarse matches whose effective leverage is between 2 and 4."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-
-    mask = pd.Series(True, index=df.index, dtype=bool)
-    conditions = _coarse_filter_conditions(
-        df,
-        max_spread=BACKUP_MAX_SPREAD,
-        leverage_min=BACKUP_LEVERAGE_MIN,
-        leverage_max=BACKUP_LEVERAGE_MAX,
+    leverage_col = _find_column(df, ("leverage", "實質槓桿"))
+    leverage = _numeric(df[leverage_col])
+    return (
+        coarse_filter_mask(df)
+        & leverage.between(LEVERAGE_MIN, LEVERAGE_MAX).fillna(False)
     )
-    for condition in conditions.values():
-        mask &= condition
-    return mask.fillna(False)
 
 
 def coarse_filter_counts(df: pd.DataFrame) -> dict[str, int]:
     """Return cumulative pass counts after each fixed hard-filter condition."""
     counts = {"raw": int(len(df))}
     if df.empty:
-        for name in ("moneyness", "price", "ratio", "days", "spread", "leverage"):
+        for name in ("moneyness", "price", "ratio", "days", "spread"):
             counts[name] = 0
+        counts["coarse"] = 0
+        counts["leverage"] = 0
         counts["final"] = 0
         return counts
 
@@ -129,21 +116,25 @@ def coarse_filter_counts(df: pd.DataFrame) -> dict[str, int]:
     for name, condition in _coarse_filter_conditions(df).items():
         mask &= condition
         counts[name] = int(mask.sum())
+    counts["coarse"] = int(mask.sum())
+    leverage_col = _find_column(df, ("leverage", "實質槓桿"))
+    leverage = _numeric(df[leverage_col])
+    mask &= leverage.between(LEVERAGE_MIN, LEVERAGE_MAX).fillna(False)
+    counts["leverage"] = int(mask.sum())
     counts["final"] = int(mask.sum())
     return counts
 
 
 def filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply the coarse filter and return a clean, independent DataFrame."""
+    """Apply both stages and return the fine-filter matches."""
+    if df.empty:
+        return df.copy()
+    return df.loc[fine_filter_mask(df)].copy().reset_index(drop=True)
+
+
+def coarse_filter_warrants(df: pd.DataFrame) -> pd.DataFrame:
+    """Return warrants passing stage one, before the leverage condition."""
     if df.empty:
         return df.copy()
     return df.loc[coarse_filter_mask(df)].copy().reset_index(drop=True)
-
-
-def filter_backup_warrants(df: pd.DataFrame) -> pd.DataFrame:
-    """Return relaxed matches that are not already strict recommendations."""
-    if df.empty:
-        return df.copy()
-    mask = backup_filter_mask(df) & ~coarse_filter_mask(df)
-    return df.loc[mask].copy().reset_index(drop=True)
 

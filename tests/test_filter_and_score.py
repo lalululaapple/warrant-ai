@@ -4,10 +4,10 @@ import unittest
 import pandas as pd
 
 from backend.filter import (
-    backup_filter_mask,
     coarse_filter_counts,
     coarse_filter_mask,
-    filter_backup_warrants,
+    coarse_filter_warrants,
+    fine_filter_mask,
     filter_warrants,
 )
 from backend.parser import normalize_dataframe
@@ -23,7 +23,7 @@ class FilterTests(unittest.TestCase):
         cls.cases = pd.read_csv(FIXTURE)
 
     def test_all_fixed_filter_cases(self):
-        actual = coarse_filter_mask(self.cases).astype(int).tolist()
+        actual = fine_filter_mask(self.cases).astype(int).tolist()
         expected = self.cases["expected_pass"].astype(int).tolist()
         self.assertEqual(actual, expected)
 
@@ -31,31 +31,31 @@ class FilterTests(unittest.TestCase):
         result = filter_warrants(self.cases)
         self.assertEqual(result["warrant_code"].tolist(), ["V001", "V002", "V003"])
 
+    def test_coarse_filter_keeps_warrants_outside_leverage_range(self):
+        result = coarse_filter_warrants(self.cases)
+        self.assertEqual(
+            result["warrant_code"].tolist(),
+            ["V001", "V002", "V003", "F007", "F008"],
+        )
+
     def test_missing_greeks_and_iv_are_retained_when_price_is_valid(self):
         row = self.cases.iloc[[0]].copy()
         row[["delta", "theta", "bid_iv", "ask_iv"]] = float("nan")
-        self.assertTrue(bool(coarse_filter_mask(row).iloc[0]))
+        self.assertTrue(bool(fine_filter_mask(row).iloc[0]))
 
     def test_filter_counts_are_cumulative_and_match_final_result(self):
         counts = coarse_filter_counts(self.cases)
         ordered = [
             counts[name] for name in
-            ("raw", "moneyness", "price", "ratio", "days", "spread", "leverage", "final")
+            ("raw", "moneyness", "price", "ratio", "days", "spread", "coarse", "leverage", "final")
         ]
         self.assertEqual(ordered, sorted(ordered, reverse=True))
         self.assertEqual(counts["final"], len(filter_warrants(self.cases)))
 
-    def test_backup_only_relaxes_spread_and_leverage(self):
-        result = filter_backup_warrants(self.cases)
-        self.assertEqual(
-            result["warrant_code"].tolist(),
-            ["F006", "F007", "F008"],
-        )
-
-    def test_backup_still_requires_positive_price(self):
+    def test_coarse_filter_still_requires_positive_price(self):
         no_price = self.cases.iloc[[0]].copy()
         no_price["price"] = float("nan")
-        self.assertFalse(bool(backup_filter_mask(no_price).iloc[0]))
+        self.assertFalse(bool(coarse_filter_mask(no_price).iloc[0]))
 
 
 class ParserTests(unittest.TestCase):

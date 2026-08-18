@@ -6,21 +6,20 @@ import traceback
 import asyncio
 import time
 import uuid
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .crawler import crawl_warrants
 from .filter import (
-    backup_filter_mask,
+    coarse_filter_mask,
     coarse_filter_counts,
-    filter_backup_warrants,
+    coarse_filter_warrants,
     filter_warrants,
 )
 from .score import score_dataframe
 from .report import export_excel
 
-app = FastAPI(title="Warrant AI v1.1")
+app = FastAPI(title="Warrant AI v1.2")
 
 # Small in-memory cache: repeated searches avoid launching Chromium again.
 # It is intentionally short so market data does not remain stale for long.
@@ -44,7 +43,7 @@ HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Warrant AI v1.1</title>
+<title>Warrant AI v1.2</title>
 
 <style>
 body{
@@ -155,8 +154,8 @@ td:nth-child(2){
 @media (max-width:700px){
     main{padding:10px}
     table{min-width:680px}
-    .results-table:not(.show-all) th:nth-child(n+8):not(:nth-child(20)),
-    .results-table:not(.show-all) td:nth-child(n+8):not(:nth-child(20)){
+    .fine-table:not(.show-all) th:nth-child(n+9):not(:nth-child(21)),
+    .fine-table:not(.show-all) td:nth-child(n+9):not(:nth-child(21)){
         display:none
     }
 }
@@ -169,7 +168,7 @@ td:nth-child(2){
 
 <div class="card">
 
-<h1>Warrant AI v1.1</h1>
+<h1>Warrant AI v1.2</h1>
 
 <p>
 輸入股票代號或中文名稱，例如：2330、台積電
@@ -207,7 +206,7 @@ function f2(v){
 }
 
 function toggleColumns(button){
-    const table = document.querySelector(".results-table");
+    const table = document.querySelector(".fine-table");
     if(!table){ return; }
     const expanded = table.classList.toggle("show-all");
     button.innerText = expanded ? "顯示精簡欄位" : "顯示完整欄位";
@@ -314,27 +313,25 @@ async function search(resumeJobId){
             '<div class="card">' +
             '<h2>' +
             f(d.symbol || symbol) +
-            ' 權證排行榜' +
+            ' 權證兩階段篩選' +
             '</h2>';
 
         h +=
             '<p class="success">' +
-            '優先推薦 ' + f(d.priority_total) + ' 檔｜' +
-            '備選名單 ' + f(d.backup_total) + ' 檔' +
+            '粗篩符合 ' + f(d.coarse_total) + ' 檔｜' +
+            '細篩符合 ' + f(d.fine_total) + ' 檔' +
             '</p>';
 
         h += '<p class="meta">資料來源：元大權證｜更新時間：' +
             f(d.updated_at) + '｜搜尋耗時：' + f2(d.elapsed_seconds) + ' 秒</p>';
 
-        h += '<div class="filter-summary"><b>固定篩選條件</b><br>' +
+        h += '<div class="filter-summary"><b>第一段：粗篩條件</b><br>' +
             '價內 0～10%／價外 0～15%、行使比例 0.01～0.05、' +
-            '剩餘天數 ≥ 60、買賣價差比 ≤ 1.5%、' +
-            '實質槓桿 2～4 倍、成交價 &gt; 0</div>';
+            '剩餘天數 ≥ 60、買賣價差比 ≤ 1.5%、成交價 &gt; 0</div>';
 
-        h += '<div class="filter-summary"><b>備選條件</b><br>' +
-            '其餘條件相同（成交價仍須 &gt; 0），僅放寬為：' +
-            '買賣價差比 ≤ 2.0%、實質槓桿 1.5～5 倍。' +
-            '已列入優先推薦者不會重複出現。</div>';
+        h += '<div class="filter-summary"><b>第二段：細篩條件</b><br>' +
+            '從粗篩結果中選出實質槓桿 2～4 倍，再依各項分數排序。' +
+            'Delta、Theta與隱波資料缺少時保留顯示，不直接淘汰。</div>';
 
         const stats = d.filter_stats || {};
         h += '<div class="filter-summary"><b>篩選淘汰統計（累積通過）</b><br>' +
@@ -344,21 +341,47 @@ async function search(resumeJobId){
             '行使比例：' + f(stats.ratio) + ' 檔 → ' +
             '剩餘天數：' + f(stats.days) + ' 檔 → ' +
             '價差比：' + f(stats.spread) + ' 檔 → ' +
+            '<b>粗篩符合：' + f(stats.coarse) + ' 檔</b> → ' +
             '實質槓桿：' + f(stats.leverage) + ' 檔 → ' +
-            '<b>最後符合：' + f(stats.final) + ' 檔</b></div>';
+            '<b>細篩符合：' + f(stats.final) + ' 檔</b></div>';
 
+        h += '<h3>第一段：粗篩結果（' + f(d.coarse_total) + ' 檔）</h3>';
+        h += '<div class="table-wrap"><table class="coarse-table">' +
+            '<tr><th>序號</th><th>權證名稱</th><th>權證代碼</th>' +
+            '<th>成交價</th><th>成交量</th><th>剩餘天數</th>' +
+            '<th>價內外</th><th>行使比例</th><th>價差比%</th>' +
+            '<th>實質槓桿</th></tr>';
+
+        for(const x of d.coarse_results || []){
+            h += '<tr>' +
+                '<td class="rank">' + f(x.rank) + '</td>' +
+                '<td>' + f(x.warrant_name) + '</td>' +
+                '<td>' + f(x.warrant_code) + '</td>' +
+                '<td>' + f(x.price) + '</td>' +
+                '<td>' + f(x.volume) + '</td>' +
+                '<td>' + f(x.days) + '</td>' +
+                '<td>' + f(x.moneyness) + '</td>' +
+                '<td>' + f(x.ratio) + '</td>' +
+                '<td>' + f(x.spread) + '</td>' +
+                '<td>' + f(x.leverage) + '</td>' +
+                '</tr>';
+        }
+        h += '</table></div>';
+
+        h += '<h3>第二段：細篩排行榜（' + f(d.fine_total) + ' 檔）</h3>';
         h += '<button class="column-toggle" type="button" ' +
             'onclick="toggleColumns(this)">顯示完整欄位</button>';
 
         h +=
             '<div class="table-wrap">' +
-            '<table class="results-table">' +
+            '<table class="results-table fine-table">' +
 
             '<tr>' +
             '<th>排名</th>' +
             '<th>權證名稱</th>' +
             '<th>權證代碼</th>' +
-            '<th>價格</th>' +
+            '<th>成交價</th>' +
+            '<th>成交量</th>' +
             '<th>剩餘天數</th>' +
             '<th>價內外</th>' +
             '<th>實質槓桿</th>' +
@@ -366,7 +389,7 @@ async function search(resumeJobId){
             '<th>Delta</th>' +
             '<th>標準Delta</th>' +
             '<th>Theta</th>' +
-            '<th>Theta損耗%</th>' +
+            '<th>每日Theta成本%</th>' +
             '<th>買價隱波%</th>' +
             '<th>賣價隱波%</th>' +
             '<th>隱波差</th>' +
@@ -377,17 +400,7 @@ async function search(resumeJobId){
             '<th>Score</th>' +
             '</tr>';
 
-        let currentTier = '';
         for(const x of d.results){
-
-            if(x.recommendation_tier !== currentTier){
-                currentTier = x.recommendation_tier;
-                const tierLabel = currentTier === 'priority'
-                    ? '優先推薦（完全符合原條件）'
-                    : '備選名單（價差 ≤ 2.0%、槓桿 1.5～5 倍）';
-                h += '<tr><td colspan="20" style="font-weight:700;' +
-                    'background:#f2f6f3;text-align:left">' + tierLabel + '</td></tr>';
-            }
 
             h +=
                 '<tr>' +
@@ -406,6 +419,10 @@ async function search(resumeJobId){
 
                 '<td>' +
                 f(x.price) +
+                '</td>' +
+
+                '<td>' +
+                f(x.volume) +
                 '</td>' +
 
                 '<td>' +
@@ -691,7 +708,7 @@ async def search(req: SearchRequest):
                     async with _crawler_lock:
                         def filter_page_with_stats(page_df):
                             return (
-                                page_df.loc[backup_filter_mask(page_df)].copy(),
+                                page_df.loc[coarse_filter_mask(page_df)].copy(),
                                 coarse_filter_counts(page_df),
                             )
 
@@ -728,107 +745,33 @@ async def search(req: SearchRequest):
                     _search_cache[symbol] = (time.monotonic(), df.copy())
 
         # 2. 第一層硬條件粗篩
+        coarse_filtered = coarse_filter_warrants(df)
         filtered = filter_warrants(df)
-        backup_filtered = filter_backup_warrants(df)
         resolved_symbol = str(df.attrs.get("symbol", symbol))
 
         # 3. 評分
         scored = score_dataframe(filtered)
-        backup_scored = score_dataframe(backup_filtered)
 
         # 4. 匯出 Excel
         path = export_excel(scored, resolved_symbol)
 
         # 5. 顯示全部符合條件的權證，保留排名順序
+        coarse_results = coarse_filtered.copy()
+        coarse_results["rank"] = range(1, len(coarse_results) + 1)
         results = scored.copy()
-        results["recommendation_tier"] = "priority"
-        backup_results = backup_scored.copy()
-        backup_results["recommendation_tier"] = "backup"
-        results = pd.concat(
-            [results, backup_results], ignore_index=True
-        )
 
         # 6. NaN -> None
-        records = []
+        def make_records(frame):
+            records = []
+            for _, row in frame.iterrows():
+                record = {}
+                for col, value in row.items():
+                    record[col] = clean_value(value)
+                records.append(record)
+            return records
 
-        for _, row in results.iterrows():
-
-            record = {}
-
-            for col, value in row.items():
-
-                record[col] = clean_value(value)
-
-            # 對應前端使用的欄位名稱
-            record["warrant_code"] = clean_value(
-                row.get("warrant_code")
-            )
-
-            record["warrant_name"] = clean_value(
-                row.get("warrant_name")
-            )
-
-            record["price"] = clean_value(
-                row.get("price")
-            )
-
-            record["days"] = clean_value(
-                row.get("days")
-            )
-
-            record["moneyness"] = clean_value(
-                row.get("moneyness")
-            )
-
-            record["leverage"] = clean_value(
-                row.get("leverage")
-            )
-
-            record["iv"] = clean_value(
-                row.get("iv")
-            )
-
-            record["delta"] = clean_value(
-                row.get("delta")
-            )
-
-            record["normalized_delta"] = clean_value(
-                row.get("normalized_delta")
-            )
-
-            record["theta"] = clean_value(
-                row.get("theta")
-            )
-
-            record["theta_decay_pct"] = clean_value(
-                row.get("theta_decay_pct")
-            )
-
-            record["bid_iv"] = clean_value(
-                row.get("bid_iv")
-            )
-
-            record["ask_iv"] = clean_value(
-                row.get("ask_iv")
-            )
-
-            record["iv_gap"] = clean_value(
-                row.get("iv_gap")
-            )
-
-            record["spread"] = clean_value(
-                row.get("spread")
-            )
-
-            record["score"] = clean_value(
-                row.get("score")
-            )
-
-            record["rank"] = clean_value(
-                row.get("rank")
-            )
-
-            records.append(record)
+        coarse_records = make_records(coarse_results)
+        records = make_records(results)
 
         elapsed_seconds = round(time.perf_counter() - search_started, 2)
         updated_at = df.attrs.get("updated_at") or datetime.now(
@@ -836,20 +779,21 @@ async def search(req: SearchRequest):
         ).strftime("%Y/%m/%d %H:%M:%S")
         filter_stats = df.attrs.get("filter_stats") or coarse_filter_counts(df)
         print(
-            f"[search] symbol={resolved_symbol} priority={len(scored)} "
-            f"backup={len(backup_scored)} "
+            f"[search] symbol={resolved_symbol} coarse={len(coarse_filtered)} "
+            f"fine={len(scored)} "
             f"elapsed={elapsed_seconds}s status=success"
         )
 
         return {
             "symbol": resolved_symbol,
-            "total": int(len(scored) + len(backup_scored)),
-            "priority_total": int(len(scored)),
-            "backup_total": int(len(backup_scored)),
+            "total": int(len(scored)),
+            "coarse_total": int(len(coarse_filtered)),
+            "fine_total": int(len(scored)),
             "excel": str(path),
             "updated_at": updated_at,
             "elapsed_seconds": elapsed_seconds,
             "filter_stats": filter_stats,
+            "coarse_results": coarse_records,
             "results": records
         }
 
